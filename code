@@ -1,0 +1,85 @@
+import cv2
+import face_recognition
+import numpy as np
+import paho.mqtt.client as mqtt
+import RPi.GPIO as GPIO
+import time
+
+# GPIO setup for servo motor
+SERVO_PIN = 18
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(SERVO_PIN, GPIO.OUT)
+servo = GPIO.PWM(SERVO_PIN, 50)  # 50Hz PWM frequency
+servo.start(0)
+
+def unlock_door():
+    servo.ChangeDutyCycle(7.5)  # Adjust based on servo angle
+    time.sleep(1)
+    servo.ChangeDutyCycle(0)
+
+def lock_door():
+    servo.ChangeDutyCycle(2.5)  # Adjust based on servo angle
+    time.sleep(1)
+    servo.ChangeDutyCycle(0)
+
+# MQTT setup
+MQTT_BROKER = "broker.hivemq.com"
+MQTT_TOPIC = "home/doorlock"
+
+def on_connect(client, userdata, flags, rc):
+    print("Connected to MQTT Broker")
+
+def on_message(client, userdata, msg):
+    command = msg.payload.decode()
+    if command == "unlock":
+        unlock_door()
+    elif command == "lock":
+        lock_door()
+
+client = mqtt.Client()
+client.on_connect = on_connect
+client.on_message = on_message
+client.connect(MQTT_BROKER, 1883, 60)
+client.subscribe(MQTT_TOPIC)
+client.loop_start()
+
+# Load known faces
+known_face_encodings = []
+known_face_names = []
+
+# Load a sample image (Replace with actual images)
+known_image = face_recognition.load_image_file("known_face.jpg")
+known_encoding = face_recognition.face_encodings(known_image)[0]
+known_face_encodings.append(known_encoding)
+known_face_names.append("Owner")
+
+# Initialize webcam
+video_capture = cv2.VideoCapture(0)
+
+while True:
+    ret, frame = video_capture.read()
+    rgb_frame = frame[:, :, ::-1]
+    face_locations = face_recognition.face_locations(rgb_frame)
+    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+    
+    for face_encoding in face_encodings:
+        matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+        name = "Unknown"
+        
+        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+        best_match_index = np.argmin(face_distances)
+        if matches[best_match_index]:
+            name = known_face_names[best_match_index]
+            unlock_door()
+            client.publish(MQTT_TOPIC, "access_granted")
+        else:
+            client.publish(MQTT_TOPIC, "access_denied")
+        
+    cv2.imshow("Face Recognition", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+video_capture.release()
+cv2.destroyAllWindows()
+servo.stop()
+GPIO.cleanup()
